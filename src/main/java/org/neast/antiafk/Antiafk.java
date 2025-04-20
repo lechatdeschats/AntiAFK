@@ -21,185 +21,149 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class Antiafk extends JavaPlugin implements Listener {
 
-    private Map<UUID, BukkitRunnable> afkTasks = new ConcurrentHashMap<>();
-    private Map<UUID, Boolean> isAfk = new ConcurrentHashMap<>();
-    private Map<UUID, Boolean> afkByJoin = new ConcurrentHashMap<>();
+    private final Map<UUID, BukkitRunnable> afkTasks = new ConcurrentHashMap<>();
+    private final Map<UUID, Boolean> isAfk      = new ConcurrentHashMap<>();
+    private final Map<UUID, Boolean> afkByJoin  = new ConcurrentHashMap<>();
     private FileConfiguration config;
 
-    private static final String PREFIX_KEY = "prefix";
-    private static final String MESSAGE_AFK = "messages.afk";
-    private static final String MESSAGE_NOT_AFK = "messages.notAfk";
+    private static final String PREFIX_KEY          = "prefix";
+    private static final String MESSAGE_AFK         = "messages.afk";
+    private static final String MESSAGE_NOT_AFK     = "messages.notAfk";
     private static final String MESSAGE_KICK_REASON = "messages.kickReason";
-    private static final String MESSAGE_AFK_NOTIFY = "messages.afkNotify";
-    private static final String TITLE_AFK = "titles.afkTitle";
-    private static final String SUBTITLE_AFK = "titles.afkSubtitle";
+    private static final String TITLE_AFK           = "titles.afkTitle";
+    private static final String SUBTITLE_AFK        = "titles.afkSubtitle";
 
     private String prefix;
     private String messageAfk;
     private String messageNotAfk;
     private String messageKickReason;
-    private String messageAfkNotify;
     private String titleAfk;
     private String subtitleAfk;
 
     @Override
     public void onEnable() {
-        // Load configuration
         saveDefaultConfig();
-        config = getConfig();
-        prefix = ChatColor.translateAlternateColorCodes('&', config.getString(PREFIX_KEY));
-        messageAfk = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_AFK));
-        messageNotAfk = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_NOT_AFK));
-        messageKickReason = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_KICK_REASON));
-        messageAfkNotify = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_AFK_NOTIFY));
-        titleAfk = ChatColor.translateAlternateColorCodes('&', config.getString(TITLE_AFK));
-        subtitleAfk = ChatColor.translateAlternateColorCodes('&', config.getString(SUBTITLE_AFK));
-
-        // Register events
+        reloadSettings();
         Bukkit.getPluginManager().registerEvents(this, this);
+    }
+
+    private void reloadSettings() {
+        config           = getConfig();
+        prefix           = ChatColor.translateAlternateColorCodes('&', config.getString(PREFIX_KEY));
+        messageAfk       = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_AFK));
+        messageNotAfk    = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_NOT_AFK));
+        messageKickReason= ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_KICK_REASON));
+        titleAfk         = ChatColor.translateAlternateColorCodes('&', config.getString(TITLE_AFK));
+        subtitleAfk      = ChatColor.translateAlternateColorCodes('&', config.getString(SUBTITLE_AFK));
     }
 
     @Override
     public void onDisable() {
-        // Cancel ongoing AFK tasks
         afkTasks.values().forEach(BukkitRunnable::cancel);
         afkTasks.clear();
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (label.equalsIgnoreCase("antiafk")) {
-            if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
-                if (!sender.hasPermission("antiafk.reload")) {
-                    sender.sendMessage(ChatColor.RED + "You do not have permission to use this command.");
-                    return true;
-                }
+        if (!"antiafk".equalsIgnoreCase(label)) return false;
+        if (args.length > 0 && "reload".equalsIgnoreCase(args[0])) {
+            if (!sender.hasPermission("antiafk.reload")) {
+                sender.sendMessage(ChatColor.RED + "You do not have permission to use this command.");
+            } else {
                 reloadConfig();
-                config = getConfig();
-                prefix = ChatColor.translateAlternateColorCodes('&', config.getString(PREFIX_KEY));
-                messageAfk = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_AFK));
-                messageNotAfk = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_NOT_AFK));
-                messageKickReason = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_KICK_REASON));
-                messageAfkNotify = ChatColor.translateAlternateColorCodes('&', config.getString(MESSAGE_AFK_NOTIFY));
-                titleAfk = ChatColor.translateAlternateColorCodes('&', config.getString(TITLE_AFK));
-                subtitleAfk = ChatColor.translateAlternateColorCodes('&', config.getString(SUBTITLE_AFK));
+                reloadSettings();
                 sender.sendMessage(ChatColor.GREEN + "Configuration successfully reloaded!");
-                return true;
             }
+            return true;
         }
         return false;
     }
 
     @EventHandler
-    public void onPlayerMove(PlayerMoveEvent event) {
-        Player player = event.getPlayer();
-        UUID playerId = player.getUniqueId();
-
-        if (player.hasPermission("antiafk.bypass")) {
-            return;
-        }
-
-        if (event.getFrom().distanceSquared(event.getTo()) > 0.01) {
-            cancelAfkTask(playerId);
-            if (isAfk.getOrDefault(playerId, false)) {
-                if (afkByJoin.getOrDefault(playerId, false)) {
-                    afkByJoin.remove(playerId);
-                } else {
-                    player.sendMessage(prefix + messageNotAfk);
-                }
-                isAfk.put(playerId, false);
-            }
-        } else {
-            if (!afkTasks.containsKey(playerId)) {
-                BukkitRunnable task = new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        player.sendMessage(prefix + messageAfk);
-                        player.sendTitle(titleAfk, subtitleAfk, 10, 70, 20);
-                        String soundName = config.getString("sounds.afkSound", "ENTITY_PLAYER_LEVELUP");
-                        Sound sound = Sound.valueOf(soundName);
-                        player.playSound(player.getLocation(), sound, 1.0f, 1.0f);
-                        isAfk.put(playerId, true);
-                        notifyAdmins(player);
-                        kickPlayerIfAfk(player);
-                    }
-                };
-                afkTasks.put(playerId, task);
-                task.runTaskLaterAsynchronously(this, config.getInt("afk.afkCheckDelayTicks", 200));
-            }
-        }
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player p = event.getPlayer();
+        if (p.hasPermission("antiafk.bypass")) return;
+        scheduleAfkTask(p);
     }
 
     @EventHandler
-    public void onPlayerJoin(PlayerJoinEvent event) {
+    public void onPlayerMove(PlayerMoveEvent event) {
         Player player = event.getPlayer();
-        UUID playerId = player.getUniqueId();
+        if (player.hasPermission("antiafk.bypass")) return;
 
-        if (!player.hasPermission("antiafk.bypass")) {
-            BukkitRunnable task = new BukkitRunnable() {
-                @Override
-                public void run() {
-                    player.sendMessage(prefix + messageAfk);
-                    player.sendTitle(titleAfk, subtitleAfk, 10, 70, 20);
-                    String soundName = config.getString("sounds.afkSound", "ENTITY_PLAYER_LEVELUP");
-                    Sound sound = Sound.valueOf(soundName);
-                    player.playSound(player.getLocation(), sound, 1.0f, 1.0f);
-                    isAfk.put(playerId, true);
-                    afkByJoin.put(playerId, true);
-                    notifyAdmins(player);
-                    kickPlayerIfAfk(player);
+        UUID id = player.getUniqueId();
+
+        // position
+        boolean movedPos = event.getFrom().distanceSquared(event.getTo()) > 0.01;
+        // tête (yaw/pitch)
+        float dyaw   = Math.abs(event.getFrom().getYaw()   - event.getTo().getYaw());
+        float dpitch = Math.abs(event.getFrom().getPitch() - event.getTo().getPitch());
+        boolean movedHead = dyaw > 0.5f || dpitch > 0.5f;
+
+        if (movedPos || movedHead) {
+            // annule ancienne tâche et clear titre si AFK
+            cancelAfkTask(id);
+            if (isAfk.getOrDefault(id, false)) {
+                if (afkByJoin.remove(id) == null) {
+                    player.sendMessage(prefix + messageNotAfk);
                 }
-            };
-            afkTasks.put(playerId, task);
-            task.runTaskLaterAsynchronously(this, config.getInt("afk.afkCheckDelayTicks", 200));
+                isAfk.put(id, false);
+                player.clearTitle();
+            }
+            // replanifie un nouveau check AFK
+            scheduleAfkTask(player);
         }
     }
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        UUID playerId = event.getPlayer().getUniqueId();
-        cancelAfkTask(playerId);
-        isAfk.remove(playerId);
-        afkByJoin.remove(playerId);
+        UUID id = event.getPlayer().getUniqueId();
+        cancelAfkTask(id);
+        isAfk.remove(id);
+        afkByJoin.remove(id);
     }
 
-    private void cancelAfkTask(UUID playerId) {
-        BukkitRunnable task = afkTasks.remove(playerId);
-        if (task != null) {
-            task.cancel();
-        }
-    }
+    private void scheduleAfkTask(Player player) {
+        UUID id = player.getUniqueId();
+        // si déjà planifié, on ne fait rien
+        if (afkTasks.containsKey(id)) return;
 
-    private void kickPlayerIfAfk(Player player) {
         BukkitRunnable task = new BukkitRunnable() {
             @Override
             public void run() {
-                if (player.isOnline() && !player.isDead() && afkTasks.containsKey(player.getUniqueId()) && isAfk.getOrDefault(player.getUniqueId(), false)) {
-                    player.kickPlayer(messageKickReason);
-                    notifyOps(player);
-                    cancelAfkTask(player.getUniqueId());
-                }
+                if (!player.isOnline()) return;
+                // passe AFK
+                player.sendMessage(prefix + messageAfk);
+                // titre persistant jusqu'à mouvement
+                player.sendTitle(titleAfk, subtitleAfk, 10, 999999, 20);
+                Sound snd = Sound.valueOf(config.getString("sounds.afkSound", "ENTITY_PLAYER_LEVELUP"));
+                player.playSound(player.getLocation(), snd, 1.0f, 1.0f);
+                isAfk.put(id, true);
+                afkByJoin.put(id, afkByJoin.getOrDefault(id, false));
+                kickPlayerIfAfk(player);
             }
         };
-        task.runTaskLater(this, config.getInt("afk.kickDelayTicks", 100));
+        afkTasks.put(id, task);
+        task.runTaskLaterAsynchronously(this, config.getInt("afk.afkCheckDelayTicks", 200));
     }
 
-    private void notifyAdmins(Player afkPlayer) {
-        String notifyMessage = messageAfkNotify.replace("{player}", afkPlayer.getName());
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (player.isOp()) {
-                player.sendMessage(prefix + notifyMessage);
-                player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-            }
-        }
+    private void cancelAfkTask(UUID id) {
+        BukkitRunnable old = afkTasks.remove(id);
+        if (old != null) old.cancel();
     }
 
-    private void notifyOps(Player kickedPlayer) {
-        String kickMessage = ChatColor.RED + "Player " + kickedPlayer.getName() + " has been kicked for being AFK.";
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (player.isOp()) {
-                player.sendMessage(prefix + kickMessage);
+    private void kickPlayerIfAfk(Player player) {
+        BukkitRunnable kicker = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (player.isOnline()
+                        && !player.isDead()
+                        && isAfk.getOrDefault(player.getUniqueId(), false)) {
+                    player.kickPlayer(messageKickReason);
+                }
+                cancelAfkTask(player.getUniqueId());
             }
-        }
+        };
+        kicker.runTaskLater(this, config.getInt("afk.kickDelayTicks", 100));
     }
 }
